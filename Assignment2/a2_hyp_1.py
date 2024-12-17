@@ -9,52 +9,40 @@ from nilearn.glm.first_level import first_level_from_bids
 from sklearn.metrics import explained_variance_score
 import datetime
 
-
 #functions
+# la = net loss risk aversve
+# ls = net loss risk seeking
+# ga = net gain risk averse
+# gs = net gain risk seeking
+def label_risk(row):
+    if row["response"] == 1:
+        return "a"
+    if row["response"] == 2:
+        return "s"
+    if row["response"] == 3:
+        return "a"
+    if row["response"] == 4:
+        return "s"
+
 def label_loss(row):
-   if row["loss"] == -50:
-      return "N"
-   if row["loss"] == -250:
-      return "L"
-   if row["loss"] == -1250:
-      return "L"
+    if row["response"] == 1:
+        return "l"
+    if row["response"] == 2:
+        return "l"
+    if row["response"] == 3:
+        return "g"
+    if row["response"] == 4:
+        return "g"
 
 def label_total(row):
     if row["total"]  < 0:
-      return "Negative"
+      return "neg"
     else :
-      return "Positive"
-    
-def concat_events(list_of_runs):
-    #concatine events and confounds
-    event_list = []
-    for ii in list_of_runs:
-        event_list.append(ii)
-    
-    #recalc onset
-    for i, element in enumerate(event_list):
-        element.index = ((element.index + 80*i).to_list())
-        element["onset"] = ((element["onset"] + 600*i).to_list())
-    
-    concat_list = pd.concat(event_list)
-    return concat_list
+      return "pos"
 
-def concat_confounds(list_of_runs):
-    #concatine events and confounds
-    event_list = []
-    for ii in list_of_runs:
-        event_list.append(ii)
-    
-    #recalc onset
-    for i, element in enumerate(event_list):
-        element.index = ((element.index + 600*i).to_list())
-        
-    concat_list = pd.concat(event_list)
-    return concat_list
 
-#main
-def main():
-    ####################### get eveerything
+ ####################### get eveerything
+def set_it_up():
     derivatives_dir = os.path.join("/work","BIDS_2024E","derivatives")
     data_dir= os.path.join("/work","BIDS_2024E")
     # Name for experiment in the BIDS directory
@@ -62,12 +50,12 @@ def main():
     #Run the function that can gather all the needed info from a BIDS folder
     models, models_run_imgs, models_events, models_confounds = \
         first_level_from_bids(
-            data_dir, task_label, derivatives_folder=derivatives_dir, n_jobs=-1, verbose=0, minimize_memory = False,
+            data_dir, task_label, derivatives_folder=derivatives_dir, n_jobs=-1,
+            verbose=0, minimize_memory = False, slice_time_ref = 0.462,
             img_filters=[('desc', 'preproc')])
 
     ########################set confounds
     #motion parameters are individually extracted
-
     confine_36_names = ['trans_x','trans_y','trans_z',
                         'rot_x','rot_y','rot_z',
                        "trans_x_derivative1",'trans_y_derivative1','trans_z_derivative1',
@@ -80,8 +68,9 @@ def main():
                        "trans_x_derivative1_power2",'trans_y_derivative1_power2','trans_z_derivative1_power2',
                        'rot_x_derivative1_power2','rot_y_derivative1_power2','rot_z_derivative1_power2',
                        'global_signal_derivative1_power2','csf_derivative1_power2','white_matter_derivative1_power2']
-        
-    # Subset confounds with selection
+
+
+     # Subset confounds with selection
     for ii in range(len(models_confounds)):
         #copy var to save previous separate for participant
         confounds1=models_confounds[ii][:].copy()
@@ -120,73 +109,54 @@ def main():
 
     ################### events
     events_sub= ['onset','duration',"trial_type"]
-    
     # Subset model events with selection
     for ii in range(len(models_events)):
         events1=models_events[ii][:]
         for i in range(len(events1)):
             events2=events1[i].copy()
-            #add new columns, separate losses and categorize them
-            events2 = events2[events2["trial_type"].isin(["loss","neutral"])]
+            #separate deck rows
+            events2 = events2[events2["trial_type"] == "decks"]
+            #sort by response"
+            events2 = events2.sort_values("RT")
+            #rename onset
+            events2["onset"] = events2["RT"]
+            #add new columns, separate choices and categorize them
+            events2["risk_cat"] = events2.apply(label_risk, axis = 1)
             events2["loss_cat"] = events2.apply(label_loss, axis = 1)
             events2["total_cat"] = events2.apply(label_total, axis = 1)
             
-            events2["trial_type"] = events2["loss_cat"] + "_" +  events2["total_cat"]
+            #events2["trial_type"] = events2["loss_cat"]+ "_" + events2["risk_cat"] + "_" +  events2["total_cat"]
+            events2["trial_type"] = events2["risk_cat"] 
+            #subset needed columns
             events2=events2[events_sub]
+            # filter nans
+            events2 = events2[events2["trial_type"].notnull()]
             events1[i]=events2
             
         models_events[ii][:]=events1
         
 
-    ########################checkpoint
-    print("preproc done")
-    ######################## concatinate because of not all events happen across runs
-    #concatinate scan image for participants
-    concat_image_list = []
-    concat_e_list = []
-    concat_c_list = []
-    for each_image in models_run_imgs:
-        concat_img = nilearn.image.concat_imgs(each_image)
-        concat_image_list.append(concat_img)
-        
-        image_ind = models_run_imgs.index(each_image)
-        print(f"concat image {image_ind + 1} / {len(models_run_imgs)} done ")
-        print(datetime.datetime.now())
+    return models, models_run_imgs, models_events, models_confounds
 
-    
-    for each_events in models_events:
-        concat_e = concat_events(each_events)
-        concat_e_list.append(concat_e)
 
-    for each_confounds in models_confounds:
-        concat_c = concat_confounds(each_confounds)
-        concat_c = concat_c.fillna(0)
-        concat_c_list.append(concat_c)
-        
-    ########################checkpoint
-    print("concat done")
-
-    # Get data and model 
+def  main():
+    models, models_run_imgs, models_events, models_confounds = set_it_up()
     models_list = []
     for i in range(len(models)):
-        models[i].fit(concat_image_list[i],concat_e_list[i],concat_c_list[i])
+        models[i].fit(models_run_imgs[i],models_events[i],models_confounds[i])
         models_list.append(models[i])
-
-        print(f"model {i} / {len(models)} done ")
+        print(f"model {i + 1} / {len(models)} done ")
         print(datetime.datetime.now())
-    
-    
-    ########################checkpoint
-    print("modeling done")
-    #save model
 
-    f = open('./models/first_level_all_quick.pkl', 'wb') 
+
+    #save
+    f = open('./models/first_level_all_hyp1.pkl', 'wb') 
     pickle.dump([models_list, 
-                 concat_image_list,
-                 concat_e_list, 
-                 concat_c_list], f)
+                     models_run_imgs,
+                     models_events, 
+                     models_confounds], f)
     f.close()
-if __name__ == '__main__':
+
+
+if __name__ == "__main__":
     main()
-
-
